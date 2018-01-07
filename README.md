@@ -13,3 +13,5 @@ Get signal meter
 
 Some of there are just dummies to satisfy the client running the rigcat, these may need to be adjusted as some shold not produce any response.
 
+Some testing with OmniRig and rigctl from hamlib.
+rigctl -m 228 -s 9600 -r COM3
