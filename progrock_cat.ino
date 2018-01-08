@@ -10,7 +10,8 @@
  *  Solder leads to the RX+TX on the progrock and wire RX to 10, TX to 11, B0 to 12, GND to GND
  *  See operating manual page 5
  *  
- *  version 1.1 2018-01-07 support multiple commands from rigcat
+ *  version 1.2 2018-01-08 added a few more commands. timeout on incomplete cat commands. silent set commands seems to cause less errors in both omnirig and rigctl.
+ *  version 1.1 2018-01-07 support multiple commands from rigctl
  *  version 1.0 2018-01-06 initial release
  */
 
@@ -18,6 +19,14 @@
 #define BUFFLEN 16
 #define VFOLEN 11
 #define VFOPIN 12
+#define RIG_ID F("ID020;")
+  // 005: R5000 -m 215
+  // 017: TS570D / K2 / K3 -m 204
+  // 018: TS570S -m 216
+  // 019: TS2000 -m 214
+  // 020: TS480 -m 228
+  // 021: TS590S -m 231
+  // 022: TS990S -m 239
 
 SoftwareSerial mySerial(10, 11); // RX, TX
 
@@ -25,6 +34,8 @@ SoftwareSerial mySerial(10, 11); // RX, TX
 unsigned char rxbuf[BUFFLEN], prbuf[BUFFLEN], rigcat[BUFFLEN], vfoa[VFOLEN], vfob[VFOLEN];
 unsigned int rxpos, rxread, prpos, opmode=2, rxs;
 bool rxcomplete, prcomplete, rx_ab, tx_ab;
+unsigned long curTime;
+const long timeout = 1000; // 1s timeout on serial communication
 
 void setup() {
   pinMode(VFOPIN, OUTPUT); // VFO A/B
@@ -42,6 +53,11 @@ void setup() {
 
 void loop() {
   int i;
+  if(rxpos==rxread) curTime = millis();
+  if(millis() > curTime + timeout){
+    Serial.print("E;");
+    rxread=rxpos;
+  }
 
   if (mySerial.available()) { // softserial polling, does not handle multiple answers
     i = mySerial.read();
@@ -79,28 +95,28 @@ void loop() {
 //    }else{
 //      Serial.print(F("E;"));
     }
-    if(rxs==100){
+    if(rxs==100){ // FAxxx; requested
       Serial.print(F("FA"));
       for(i=0;i<VFOLEN;i++){
         Serial.write(vfoa[i]);
       }
       Serial.print(F(";"));
-    }else if(rxs==101){
+    }else if(rxs==101){ // FBxxx; requested
       Serial.print(F("FB"));
       for(i=0;i<VFOLEN;i++){
         Serial.write(vfob[i]);
       }
       Serial.print(F(";"));
-    }else if(rxs==110){
-      Serial.print(F("IF"));
-      //Serial.print(F("IF00000000000000000000000000000000000;"));
+    }else if(rxs==110){ // IFxxxx; requested
+      Serial.print(F("IF")); // this will need to be filled with parameters set elseware...
       for(i=0;i<VFOLEN;i++){ // P1 11 digit freq
         Serial.write(vfoa[i]);
       }
       Serial.print(F("     ")); // P2 five spaces
       Serial.print(F("00000000000")); // P3-P8
       Serial.print(opmode); // P9 opmode
-      Serial.print(F("000000 ;")); // P10-P15
+      Serial.print(rx_ab ? '1' : '0'); // P10 "see FR, FT commands"
+      Serial.print(F("00000 ;")); // P10-P15
     }
     rxs=0;
     prclear();
@@ -116,9 +132,15 @@ void loop() {
 
     rxs=255; // status 255, unhandled packet
     if(rigcat[0] == 'A'){
-      if(rigcat[1]=='I' && (rigcat[2]==';' || rigcat[3]==';')){ // AI, auto information
-        rxs=0; // no further processing
-        Serial.print(F("AI0;"));
+      if(rigcat[1]=='I'){ // AI, auto information
+        rxs=0;
+        if(rigcat[2]==';'){ // get
+          rxs=0; // no further processing
+          Serial.print(F("AI0;"));
+        }else if(rigcat[3]==';'){
+          rxs=0;
+          //Serial.print(F("AI0;")); // should (in)activate broadcasting of IF messages, not supported yet.
+        }
       }
     }else if(rigcat[0] == 'F'){
       if(rigcat[1] == 'A'){ // FA, get/set VFO A
@@ -127,7 +149,8 @@ void loop() {
           rxs=100; // request FAxxx;
           mySerial.print(F("4?\r"));
         }else if(rigcat[13] == ';'){ // set
-          rxs=100; // request FAxxx;
+          //rxs=100; // request FAxxx;
+          rxs=0; // do not request FAxxx;
           mySerial.print(F("4="));
           for(i=2;i<13;i++){
             mySerial.write(rigcat[i]);
@@ -140,12 +163,19 @@ void loop() {
           rxs=101; // request FBxxx;
           mySerial.print(F("7?\r"));
         }else if(rigcat[13] == ';'){ // set
-          rxs=101; // request FBxxx;
+          //rxs=101; // request FBxxx;
+          rxs=0;
           mySerial.print(F("7="));
           for(i=2;i<13;i++){
             mySerial.write(rigcat[i]);
           }
           mySerial.write('\r');
+        }
+      }else if(rigcat[1] == 'L'){ // FL, filter
+        rxs=254;
+        if(rigcat[2] == ';'){ // get
+          rxs=0;
+          Serial.print(F("FL000000;")); // FIXME
         }
       }else if(rigcat[1] == 'R'){ // FR, get/set receiver VFO A/B
         rxs=254;
@@ -156,11 +186,11 @@ void loop() {
           Serial.print(F(";"));
         }else if(rigcat[3] == ';'){ // set
           rxs=0;
-          Serial.print(F("FR"));
+          //Serial.print(F("FR"));
           rx_ab = rigcat[2] == '1';
           digitalWrite(VFOPIN, !rx_ab);
-          Serial.print(rx_ab ? '1' : '0');
-          Serial.print(F(";"));
+          //Serial.print(rx_ab ? '1' : '0');
+          //Serial.print(F(";"));
         }
       }else if(rigcat[1] == 'T'){ // FT, get/set transmitter VFO A/B
         rxs=254;
@@ -171,17 +201,20 @@ void loop() {
           Serial.print(F(";"));
         }else if(rigcat[3] == ';'){ // set
           rxs=0;
-          Serial.print(F("FT"));
+          //Serial.print(F("FT"));
           tx_ab = rigcat[2] == '1';
           //digitalWrite(VFOPIN, !tx_ab);
-          Serial.print(tx_ab ? '1' : '0');
-          Serial.print(F(";"));
+          //Serial.print(tx_ab ? '1' : '0');
+          //Serial.print(F(";"));
         }
+      }else if(rigcat[1] == 'V' && rigcat[2] == ';'){ // FV, get firmware version
+        rxs=0;
+        Serial.print(F("FV1.00;"));
       }
     }else if(rigcat[0] == 'I'){
       if(rigcat[1] == 'D' && rigcat[2] == ';'){ // ID, read transceiver identity
         rxs=0;
-        Serial.print(F("ID020;"));
+        Serial.print(RIG_ID); // some programs autodetect/verify the model ID!
       }else if(rigcat[1] == 'F' && rigcat[2] == ';'){ // IF, read transceiver status
         rxs=110; // request IFxxx;
         mySerial.print(F("4?\r")); // check vfo A/B
@@ -198,9 +231,9 @@ void loop() {
         if(rigcat[2] >= '0' && rigcat[2] <= '9'){
           rxs=0;
           opmode = rigcat[2]-'0';
-          Serial.print(F("MD"));
-          Serial.print(opmode);
-          Serial.print(F(";"));
+          //Serial.print(F("MD"));
+          //Serial.print(opmode);
+          //Serial.print(F(";"));
         }
       }
     }else if(rigcat[0] == 'N'){
@@ -228,17 +261,31 @@ void loop() {
         Serial.print(F("RT0;"));
       }
     }else if(rigcat[0] == 'S'){
-      if(rigcat[1] == 'M' && rigcat[3] == ';'){ // SM, signal meter
+      if(rigcat[1] == 'H' && rigcat[2] == ';'){ // SH high pass freq
+        rxs=0;
+        Serial.print(F("SH07;"));
+      }else if(rigcat[1] == 'L' && rigcat[2] == ';'){ // SL, low pass freq
+        rxs=0;
+        Serial.print(F("SL07;"));
+      }else if(rigcat[1] == 'M' && rigcat[3] == ';'){ // SM, signal meter
         rxs=0;
         Serial.print(F("SM00000;"));
+      }
+    }else if(rigcat[0] == 'T'){
+      if(rigcat[1] == 'O' && rigcat[2] == ';'){ // TO, tone status
+        rxs=0;
+        Serial.print(F("TO0;"));
       }
     }
     if(rxs==255){
       rxs=0;
-      Serial.print(F("?;")); // bad command syntax
+      Serial.print(F("?;")); // bad command syntax | unknown command or busy
     }else if(rxs==254){
       rxs=0;
-      Serial.print(F("O;")); // processing not completed
+      Serial.print(F("O;")); // processing not completed | overflow
+    }else if(rxs==253){
+      rxs=0;
+      Serial.print(F("E;")); // error
     }
   }
 }
