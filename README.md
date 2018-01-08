@@ -16,3 +16,5 @@ Some of there are just dummies to satisfy the client running the rigcat, these m
 Some testing with OmniRig and rigctl from hamlib.
 
 rigctl -m 228 -s 9600 -r COM3
+
+More testing on the VFO AA, AB, BA, BB stuff needed. FR command works, need to figure out how rigctl uses it.
